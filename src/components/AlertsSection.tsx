@@ -9,6 +9,7 @@ import {
   alertKindLabel,
   createAlert,
   ensureNotificationPermission,
+  evaluateAlert,
   loadAlerts,
   notify,
   saveAlerts,
@@ -22,96 +23,144 @@ type Props = {
   draft?: { stock: StockProfile; price: number; token: number } | null
 }
 
-export function AlertsSection({ draft }: Props) {
-  const [alerts, setAlerts] = useState<PriceAlert[]>(() => loadAlerts())
-  const initialTicker = draft?.stock.ticker ?? watchlist[0].ticker
+function pushToast(
+  setToasts: (updater: (t: Toast[]) => Toast[]) => void,
+  title: string,
+  body: string,
+) {
+  const toastId = crypto.randomUUID()
+  setToasts((t) => [...t, { id: toastId, title, body }])
+  window.setTimeout(() => {
+    setToasts((t) => t.filter((x) => x.id !== toastId))
+  }, 6000)
+}
+
+type ComposerProps = {
+  initialTicker: string
+  initialThreshold: string
+  onAdd: (alert: PriceAlert) => void
+}
+
+function AlertComposer({ initialTicker, initialThreshold, onAdd }: ComposerProps) {
   const [ticker, setTicker] = useState(initialTicker)
   const [kind, setKind] = useState<AlertKind>('price_below')
-  const [threshold, setThreshold] = useState(
-    String(draft ? Math.round(draft.price * 100) / 100 : watchlist[0].basePrice),
-  )
-  const [appliedToken, setAppliedToken] = useState(0)
-  const [toasts, setToasts] = useState<Toast[]>([])
-  const [perm, setPerm] = useState(
-    typeof Notification !== 'undefined' ? Notification.permission : 'denied',
-  )
-
-  if (draft && draft.token !== appliedToken) {
-    setAppliedToken(draft.token)
-    setTicker(draft.stock.ticker)
-    setThreshold(String(Math.round(draft.price * 100) / 100))
-    setKind('price_below')
-    queueMicrotask(() => {
-      document.getElementById('alerts')?.scrollIntoView({ behavior: 'smooth' })
-    })
-  }
-
-  useEffect(() => {
-    saveAlerts(alerts)
-  }, [alerts])
+  const [threshold, setThreshold] = useState(initialThreshold)
 
   const selected = useMemo(
     () => watchlist.find((s) => s.ticker === ticker) ?? watchlist[0],
     [ticker],
   )
 
+  function addAlert() {
+    const value = Number(threshold)
+    if (!Number.isFinite(value) || value <= 0) return
+    onAdd(
+      createAlert({
+        ticker: selected.ticker,
+        name: selected.name,
+        kind,
+        threshold: value,
+        note: alertKindLabel[kind],
+      }),
+    )
+  }
+
+  return (
+    <div className="alert-form">
+      <div className="field">
+        <label>종목</label>
+        <select
+          value={ticker}
+          onChange={(e) => {
+            const next = e.target.value
+            setTicker(next)
+            const s = watchlist.find((x) => x.ticker === next)
+            if (s) setThreshold(String(s.basePrice))
+          }}
+        >
+          {watchlist.map((s) => (
+            <option key={s.ticker} value={s.ticker}>
+              {s.market} · {s.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="field">
+        <label>조건</label>
+        <select value={kind} onChange={(e) => setKind(e.target.value as AlertKind)}>
+          {(Object.keys(alertKindLabel) as AlertKind[]).map((k) => (
+            <option key={k} value={k}>
+              {alertKindLabel[k]}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="field">
+        <label>
+          {kind.startsWith('rsi')
+            ? 'RSI 기준'
+            : kind === 'accumulation'
+              ? '매집봉 점수'
+              : '가격'}
+        </label>
+        <input
+          value={threshold}
+          onChange={(e) => setThreshold(e.target.value)}
+          inputMode="decimal"
+        />
+      </div>
+      <div className="field">
+        <label>미리보기</label>
+        <input value={selected.name} readOnly />
+      </div>
+      <button type="button" className="btn btn-primary" onClick={addAlert}>
+        알림 추가
+      </button>
+    </div>
+  )
+}
+
+export function AlertsSection({ draft }: Props) {
+  const [alerts, setAlerts] = useState<PriceAlert[]>(() => loadAlerts())
+  const [toasts, setToasts] = useState<Toast[]>([])
+  const [perm, setPerm] = useState(
+    typeof Notification !== 'undefined' ? Notification.permission : 'denied',
+  )
+  const [lastCheck, setLastCheck] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!draft) return
+    document.getElementById('alerts')?.scrollIntoView({ behavior: 'smooth' })
+  }, [draft])
+
+  useEffect(() => {
+    saveAlerts(alerts)
+  }, [alerts])
+
+  function runCheck(prev: PriceAlert[]): PriceAlert[] {
+    let changed = false
+    const next = prev.map((a) => {
+      if (!a.active || a.triggeredAt) return a
+      const stock = watchlist.find((s) => s.ticker === a.ticker)
+      if (!stock) return a
+      const candles = generateCandles(stock.ticker, stock.basePrice, 100)
+      const timing = analyzeTiming(candles)
+      const acc = detectAccumulation(candles)
+      const hit = evaluateAlert(a, timing, acc, candles.length)
+      if (!hit) return a
+      changed = true
+      const title = `개미레이더 알림 · ${alertKindLabel[a.kind]}`
+      notify(title, hit)
+      pushToast(setToasts, title, hit)
+      return { ...a, triggeredAt: new Date().toISOString(), active: false }
+    })
+    return changed ? next : prev
+  }
+
   useEffect(() => {
     const timer = window.setInterval(() => {
-      setAlerts((prev) => {
-        let changed = false
-        const next = prev.map((a) => {
-          if (!a.active || a.triggeredAt) return a
-          const stock = watchlist.find((s) => s.ticker === a.ticker)
-          if (!stock) return a
-          const candles = generateCandles(stock.ticker, stock.basePrice, 100)
-          const timing = analyzeTiming(candles)
-          const acc = detectAccumulation(candles)
-          const latestAcc = acc.find((s) => s.index >= candles.length - 3)
-
-          let hit = false
-          let body = ''
-          if (a.kind === 'price_above' && timing.lastClose >= a.threshold) {
-            hit = true
-            body = `${stock.name} 종가 ${timing.lastClose.toFixed(2)} ≥ 목표가 ${a.threshold}`
-          } else if (a.kind === 'price_below' && timing.lastClose <= a.threshold) {
-            hit = true
-            body = `${stock.name} 종가 ${timing.lastClose.toFixed(2)} ≤ 지지가 ${a.threshold}`
-          } else if (
-            a.kind === 'accumulation' &&
-            latestAcc &&
-            latestAcc.score >= a.threshold
-          ) {
-            hit = true
-            body = `${stock.name} 매집봉 점수 ${latestAcc.score} (기준 ${a.threshold})`
-          } else if (
-            a.kind === 'rsi_oversold' &&
-            timing.rsi != null &&
-            timing.rsi <= a.threshold
-          ) {
-            hit = true
-            body = `${stock.name} RSI ${timing.rsi.toFixed(1)} ≤ ${a.threshold}`
-          } else if (
-            a.kind === 'rsi_overbought' &&
-            timing.rsi != null &&
-            timing.rsi >= a.threshold
-          ) {
-            hit = true
-            body = `${stock.name} RSI ${timing.rsi.toFixed(1)} ≥ ${a.threshold}`
-          }
-
-          if (!hit) return a
-          changed = true
-          const title = `개미레이더 알림 · ${alertKindLabel[a.kind]}`
-          notify(title, body)
-          const toastId = crypto.randomUUID()
-          setToasts((t) => [...t, { id: toastId, title, body }])
-          window.setTimeout(() => {
-            setToasts((t) => t.filter((x) => x.id !== toastId))
-          }, 6000)
-          return { ...a, triggeredAt: new Date().toISOString(), active: false }
-        })
-        return changed ? next : prev
-      })
+      setAlerts((prev) => runCheck(prev))
+      setLastCheck(new Date().toLocaleTimeString('ko-KR'))
     }, 4000)
     return () => window.clearInterval(timer)
   }, [])
@@ -124,18 +173,15 @@ export function AlertsSection({ draft }: Props) {
     }
   }
 
-  function addAlert() {
-    const value = Number(threshold)
-    if (!Number.isFinite(value) || value <= 0) return
-    const alert = createAlert({
-      ticker: selected.ticker,
-      name: selected.name,
-      kind,
-      threshold: value,
-      note: alertKindLabel[kind],
-    })
-    setAlerts((prev) => [alert, ...prev])
+  function checkNow() {
+    setAlerts((prev) => runCheck(prev))
+    setLastCheck(new Date().toLocaleTimeString('ko-KR'))
   }
+
+  const composerTicker = draft?.stock.ticker ?? watchlist[0].ticker
+  const composerThreshold = draft
+    ? String(Math.round(draft.price * 100) / 100)
+    : String(watchlist[0].basePrice)
 
   return (
     <section id="alerts">
@@ -144,7 +190,7 @@ export function AlertsSection({ draft }: Props) {
         <h2>매수·매도 타이밍을 놓치지 않게</h2>
         <p>
           목표가·지지가·매집봉 점수·RSI 조건을 저장해 두면, 페이지를 연 동안
-          주기적으로 점검하고 브라우저 알림으로 알려줍니다.
+          주기적으로 점검하고 브라우저 알림·토스트로 알려줍니다.
         </p>
       </div>
 
@@ -153,60 +199,19 @@ export function AlertsSection({ draft }: Props) {
           <button type="button" className="btn btn-primary" onClick={enableNotifications}>
             브라우저 알림 {perm === 'granted' ? '켜짐' : '허용하기'}
           </button>
-          <span className="chip">현재 권한: {perm}</span>
+          <button type="button" className="btn btn-ghost" onClick={checkNow}>
+            지금 점검
+          </button>
+          <span className="chip">권한: {perm}</span>
+          {lastCheck && <span className="chip">최근 점검 {lastCheck}</span>}
         </div>
 
-        <div className="alert-form">
-          <div className="field">
-            <label>종목</label>
-            <select
-              value={ticker}
-              onChange={(e) => {
-                const next = e.target.value
-                setTicker(next)
-                const s = watchlist.find((x) => x.ticker === next)
-                if (s) setThreshold(String(s.basePrice))
-              }}
-            >
-              {watchlist.map((s) => (
-                <option key={s.ticker} value={s.ticker}>
-                  {s.market} · {s.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label>조건</label>
-            <select value={kind} onChange={(e) => setKind(e.target.value as AlertKind)}>
-              {(Object.keys(alertKindLabel) as AlertKind[]).map((k) => (
-                <option key={k} value={k}>
-                  {alertKindLabel[k]}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label>
-              {kind.startsWith('rsi')
-                ? 'RSI 기준'
-                : kind === 'accumulation'
-                  ? '매집봉 점수'
-                  : '가격'}
-            </label>
-            <input
-              value={threshold}
-              onChange={(e) => setThreshold(e.target.value)}
-              inputMode="decimal"
-            />
-          </div>
-          <div className="field">
-            <label>미리보기</label>
-            <input value={selected.name} readOnly />
-          </div>
-          <button type="button" className="btn btn-primary" onClick={addAlert}>
-            알림 추가
-          </button>
-        </div>
+        <AlertComposer
+          key={draft?.token ?? 'idle'}
+          initialTicker={composerTicker}
+          initialThreshold={composerThreshold}
+          onAdd={(alert) => setAlerts((prev) => [alert, ...prev])}
+        />
 
         <div className="alert-list">
           {alerts.length === 0 && (

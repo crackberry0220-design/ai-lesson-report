@@ -1,4 +1,11 @@
-export type AlertKind = 'price_above' | 'price_below' | 'accumulation' | 'rsi_oversold' | 'rsi_overbought'
+import type { AccumulationSignal, TimingReport } from './market'
+
+export type AlertKind =
+  | 'price_above'
+  | 'price_below'
+  | 'accumulation'
+  | 'rsi_oversold'
+  | 'rsi_overbought'
 
 export type PriceAlert = {
   id: string
@@ -62,4 +69,42 @@ export function notify(title: string, body: string) {
   } catch {
     // ignore
   }
+}
+
+/** 알림 조건 충족 시 본문 문자열, 아니면 null */
+export function evaluateAlert(
+  alert: PriceAlert,
+  timing: TimingReport,
+  acc: AccumulationSignal[],
+  candleCount: number,
+): string | null {
+  if (alert.kind === 'price_above' && timing.lastClose >= alert.threshold) {
+    return `${alert.name} 종가 ${timing.lastClose.toFixed(2)} ≥ 목표가 ${alert.threshold}`
+  }
+  if (alert.kind === 'price_below' && timing.lastClose <= alert.threshold) {
+    return `${alert.name} 종가 ${timing.lastClose.toFixed(2)} ≤ 지지가 ${alert.threshold}`
+  }
+  if (alert.kind === 'accumulation') {
+    const near = acc.find(
+      (s) => s.index >= candleCount - 3 && s.score >= alert.threshold,
+    )
+    if (near) {
+      return `${alert.name} 매집봉 점수 ${near.score} (기준 ${alert.threshold}) · ${near.date}`
+    }
+  }
+  if (
+    alert.kind === 'rsi_oversold' &&
+    timing.rsi != null &&
+    timing.rsi <= alert.threshold
+  ) {
+    return `${alert.name} RSI ${timing.rsi.toFixed(1)} ≤ ${alert.threshold}`
+  }
+  if (
+    alert.kind === 'rsi_overbought' &&
+    timing.rsi != null &&
+    timing.rsi >= alert.threshold
+  ) {
+    return `${alert.name} RSI ${timing.rsi.toFixed(1)} ≥ ${alert.threshold}`
+  }
+  return null
 }

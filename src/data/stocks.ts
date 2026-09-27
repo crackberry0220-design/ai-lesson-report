@@ -92,6 +92,21 @@ export const watchlist: StockProfile[] = [
     tags: ['배당', '우량주', '금융'],
   },
   {
+    ticker: '373220.KS',
+    name: 'LG에너지솔루션',
+    market: 'KR',
+    sector: '2차전지',
+    basePrice: 385000,
+    currency: 'KRW',
+    thesis:
+      '글로벌 EV·ESS 배터리 공급망의 핵심 플레이어입니다. 북미·유럽 고객 다변화와 ESS 수요가 중장기 성장축입니다.',
+    growthDrivers: ['북미 IRA 수혜', 'ESS 수요', '원가·수율 개선'],
+    risks: ['EV 수요 둔화', '원재료 가격', '경쟁 심화'],
+    qualityScore: 82,
+    growthScore: 85,
+    tags: ['성장', '2차전지', '글로벌'],
+  },
+  {
     ticker: 'AAPL',
     name: 'Apple',
     market: 'US',

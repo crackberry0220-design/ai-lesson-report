@@ -11,28 +11,60 @@ type Props = {
   onPickForAlert?: (stock: StockProfile, price: number) => void
 }
 
+function attractiveness(
+  quality: number,
+  growth: number,
+  bias: ReturnType<typeof analyzeTiming>['bias'],
+  accScore: number,
+) {
+  const timingBoost =
+    bias === '매수 관심' ? 12 : bias === '매도·비중축소 관심' ? -8 : 0
+  return quality * 0.45 + growth * 0.45 + timingBoost + Math.min(10, accScore / 10)
+}
+
 export function DiscoverySection({ onPickForAlert }: Props) {
   const [market, setMarket] = useState<'ALL' | 'KR' | 'US'>('ALL')
+  const [sortBy, setSortBy] = useState<'attract' | 'quality' | 'growth'>('attract')
   const [selectedTicker, setSelectedTicker] = useState(watchlist[0].ticker)
 
-  const filtered = useMemo(
-    () =>
-      watchlist.filter((s) => (market === 'ALL' ? true : s.market === market)),
-    [market],
-  )
+  const ranked = useMemo(() => {
+    const rows = watchlist
+      .filter((s) => (market === 'ALL' ? true : s.market === market))
+      .map((s) => {
+        const candles = generateCandles(s.ticker, s.basePrice, 100)
+        const timing = analyzeTiming(candles)
+        const signals = detectAccumulation(candles)
+        const score = attractiveness(
+          s.qualityScore,
+          s.growthScore,
+          timing.bias,
+          signals[0]?.score ?? 0,
+        )
+        return { stock: s, timing, signals, score }
+      })
 
-  const stock =
-    filtered.find((s) => s.ticker === selectedTicker) ?? filtered[0] ?? watchlist[0]
+    rows.sort((a, b) => {
+      if (sortBy === 'quality') return b.stock.qualityScore - a.stock.qualityScore
+      if (sortBy === 'growth') return b.stock.growthScore - a.stock.growthScore
+      return b.score - a.score
+    })
+    return rows
+  }, [market, sortBy])
 
+  const selected =
+    ranked.find((r) => r.stock.ticker === selectedTicker) ?? ranked[0]
+  const stock = selected?.stock ?? watchlist[0]
+  const activeTicker = stock.ticker
   const candles = useMemo(
     () => generateCandles(stock.ticker, stock.basePrice, 100),
     [stock.ticker, stock.basePrice],
   )
-  const signals = useMemo(() => detectAccumulation(candles), [candles])
-  const timing = useMemo(() => analyzeTiming(candles), [candles])
+  const signals = selected?.signals ?? []
+  const timing = selected?.timing ?? analyzeTiming(candles)
 
   const biasClass =
     timing.bias === '매수 관심' ? 'buy' : timing.bias === '관망' ? 'hold' : 'sell'
+  const topTickers = new Set(ranked.slice(0, 3).map((r) => r.stock.ticker))
 
   return (
     <section id="discover">
@@ -40,8 +72,8 @@ export function DiscoverySection({ onPickForAlert }: Props) {
         <div className="eyebrow">종목 발굴 · 분석</div>
         <h2>우량주 · 성장 후보를 이유와 함께</h2>
         <p>
-          국내·해외 대표 종목의 투자 논리, 성장 동력, 리스크와 함께 매집봉·타이밍
-          지표를 보여줍니다. (차트는 교육용 시드 시세입니다)
+          품질·성장 점수와 타이밍·매집봉을 합산한 투자 매력도로 국내·해외 후보를
+          정렬합니다. (차트는 교육용 시드 시세입니다)
         </p>
       </div>
 
@@ -57,13 +89,26 @@ export function DiscoverySection({ onPickForAlert }: Props) {
             key={key}
             type="button"
             className={market === key ? 'active' : ''}
-            onClick={() => {
-              setMarket(key)
-              const next = watchlist.find((s) =>
-                key === 'ALL' ? true : s.market === key,
-              )
-              if (next) setSelectedTicker(next.ticker)
-            }}
+            onClick={() => setMarket(key)}
+          >
+            {label}
+          </button>
+        ))}
+        <span className="chip" style={{ marginLeft: 4 }}>
+          정렬
+        </span>
+        {(
+          [
+            ['attract', '투자 매력'],
+            ['quality', '우량'],
+            ['growth', '성장'],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            className={sortBy === key ? 'active' : ''}
+            onClick={() => setSortBy(key)}
           >
             {label}
           </button>
@@ -72,18 +117,25 @@ export function DiscoverySection({ onPickForAlert }: Props) {
 
       <div className="stock-layout">
         <div className="stock-list panel">
-          {filtered.map((s) => {
-            const c = generateCandles(s.ticker, s.basePrice, 100)
-            const t = analyzeTiming(c)
+          {ranked.map((row, i) => {
+            const s = row.stock
+            const t = row.timing
             return (
               <button
                 key={s.ticker}
                 type="button"
-                className={`stock-item ${stock.ticker === s.ticker ? 'active' : ''}`}
+                className={`stock-item ${activeTicker === s.ticker ? 'active' : ''}`}
                 onClick={() => setSelectedTicker(s.ticker)}
               >
                 <div className="row">
-                  <strong>{s.name}</strong>
+                  <strong>
+                    {topTickers.has(s.ticker) && (
+                      <span className="chip signal" style={{ marginRight: 6 }}>
+                        TOP {i + 1}
+                      </span>
+                    )}
+                    {s.name}
+                  </strong>
                   <span className={`price ${t.changePct >= 0 ? 'up' : 'down'}`}>
                     {t.changePct >= 0 ? '+' : ''}
                     {t.changePct.toFixed(2)}%
@@ -91,7 +143,7 @@ export function DiscoverySection({ onPickForAlert }: Props) {
                 </div>
                 <div className="row" style={{ marginTop: 2 }}>
                   <span className="ticker">
-                    {s.market} · {s.ticker}
+                    {s.market} · {s.ticker} · 매력 {Math.round(row.score)}
                   </span>
                   <span className="price">{formatPrice(t.lastClose, s.currency)}</span>
                 </div>
