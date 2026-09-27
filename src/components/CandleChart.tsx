@@ -7,7 +7,6 @@ import {
   YAxis,
   Tooltip,
   CartesianGrid,
-  ReferenceDot,
 } from 'recharts'
 import type { AccumulationSignal, Candle } from '../lib/market'
 import { sma } from '../lib/market'
@@ -27,7 +26,6 @@ export function CandleChart({ candles, signals = [], currency }: Props) {
   }))
 
   const signalIdx = new Set(signals.map((s) => s.index))
-  const recent = signals.slice(0, 5)
 
   return (
     <div className="chart-wrap">
@@ -41,6 +39,7 @@ export function CandleChart({ candles, signals = [], currency }: Props) {
             minTickGap={28}
           />
           <YAxis
+            yAxisId="price"
             domain={['auto', 'auto']}
             tick={{ fill: '#5f7d6e', fontSize: 11 }}
             width={56}
@@ -48,6 +47,7 @@ export function CandleChart({ candles, signals = [], currency }: Props) {
               currency === 'KRW' ? `${Math.round(v / 1000)}k` : v.toFixed(0)
             }
           />
+          <YAxis yAxisId="vol" orientation="right" hide domain={[0, 'dataMax']} />
           <Tooltip
             contentStyle={{
               background: '#12261f',
@@ -65,13 +65,26 @@ export function CandleChart({ candles, signals = [], currency }: Props) {
                   '종가',
                 ]
               }
-              if (name === 'ma20') return [n?.toFixed?.(2) ?? n, 'MA20']
+              if (name === 'ma20') {
+                return [
+                  currency === 'KRW'
+                    ? `₩${Math.round(n).toLocaleString('ko-KR')}`
+                    : `$${Number(n).toFixed(2)}`,
+                  'MA20',
+                ]
+              }
               if (name === 'volume') return [Math.round(n).toLocaleString('ko-KR'), '거래량']
               return [value, String(name)]
             }}
           />
-          <Bar dataKey="volume" yAxisId={0} fill="rgba(45,212,168,0.12)" barSize={4} />
+          <Bar
+            yAxisId="vol"
+            dataKey="volume"
+            fill="rgba(45,212,168,0.18)"
+            barSize={5}
+          />
           <Line
+            yAxisId="price"
             type="monotone"
             dataKey="close"
             stroke="#2dd4a8"
@@ -79,7 +92,7 @@ export function CandleChart({ candles, signals = [], currency }: Props) {
             dot={(props) => {
               const { cx, cy, index } = props
               if (cx == null || cy == null || index == null) return null
-              if (!signalIdx.has(index)) return null
+              if (!signalIdx.has(index)) return <g key={`d-${index}`} />
               return (
                 <circle
                   key={`sig-${index}`}
@@ -95,6 +108,7 @@ export function CandleChart({ candles, signals = [], currency }: Props) {
             activeDot={{ r: 4 }}
           />
           <Line
+            yAxisId="price"
             type="monotone"
             dataKey="ma20"
             stroke="#f0b429"
@@ -102,14 +116,6 @@ export function CandleChart({ candles, signals = [], currency }: Props) {
             strokeDasharray="4 4"
             dot={false}
           />
-          {recent.map((s) => (
-            <ReferenceDot
-              key={s.date + s.score}
-              x={s.date}
-              y={s.candle.close}
-              r={0}
-            />
-          ))}
         </ComposedChart>
       </ResponsiveContainer>
     </div>
